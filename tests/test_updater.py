@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from zipfile import ZipFile, ZipInfo
 
 from downloads import PublicHTTPSConnection, download_zip, https_url, inspect_zip, open_https
+from github_auth import DEVICE_URL, GitHubAuth, is_client_id, oauth_post
 from main import Plugin, install_type, installed_plugins
 from phone_input import PhoneInput
 from releases import latest_release, release_status, repository_from_url, version_key
@@ -42,12 +43,41 @@ def fake_release(assets):
     def response(*_args):
         stream = BytesIO(payload)
         stream.status = 200
+        stream.getheader = {}.get
         yield stream
 
     return response
 
 
 class ReleaseTests(TestCase):
+    def test_anonymous_quota_headers_are_read_even_without_a_release(self):
+        response = mock.MagicMock(status=404)
+        response.__enter__.return_value = response
+        response.getheader.side_effect = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "123456"}.get
+        quota = {}
+        with mock.patch("releases.open_https", return_value=response):
+            self.assertEqual(latest_release("owner/repo", "Test", rate_limit=quota), {"error": "releaseNotFound"})
+        self.assertEqual(quota, {"remaining": 0, "reset_at": 123456, "retry_after": None})
+
+    def test_secondary_limit_is_distinct_from_a_forbidden_repo(self):
+        response = mock.MagicMock(status=403)
+        response.__enter__.return_value = response
+        response.getheader.side_effect = {"X-RateLimit-Remaining": "20"}.get
+        response.read.side_effect = [b'{"message":"You have exceeded a secondary rate limit."}', b'{}']
+        with mock.patch("releases.open_https", return_value=response):
+            self.assertEqual(latest_release("owner/repo", "Test"), {"error": "releaseRateLimit"})
+            self.assertEqual(latest_release("owner/repo", "Test"), {"error": "releaseHttpError", "http_status": 403})
+
+    def test_release_checks_use_bearer_token_and_report_invalid_login(self):
+        response = mock.MagicMock(status=401)
+        response.__enter__.return_value = response
+        with mock.patch("releases.open_https", return_value=response) as request:
+            self.assertEqual(latest_release("owner/repo", "Test", token="gho_test"),
+                             {"error": "releaseAuthExpired"})
+            url, headers = request.call_args.args
+            self.assertEqual(url, "https://api.github.com/repos/owner/repo/releases/latest")
+            self.assertEqual(headers["Authorization"], "Bearer gho_test")
+
     def test_repository_inputs(self):
         self.assertEqual(repository_from_url(" github.com/Owner/Repo.git "), "owner/repo")
         self.assertEqual(repository_from_url("git@github.com:Owner/Repo.git"), "owner/repo")
@@ -232,6 +262,93 @@ class ZipTests(TestCase):
             dial.assert_called_once_with(("198.18.0.29", 443), 10)
 
 
+    def test_https_drops_bearer_token_on_cross_host_redirect(self):
+        redirect = mock.MagicMock(status=302)
+        redirect.__enter__.return_value = redirect
+        redirect.getheader.return_value = "https://example.com/release.zip"
+        first = mock.Mock()
+        first.getresponse.return_value = redirect
+        final = mock.MagicMock(status=200)
+        final.__enter__.return_value = final
+        second = mock.Mock()
+        second.getresponse.return_value = final
+        with mock.patch("downloads.PublicHTTPSConnection", side_effect=[first, second]):
+            with open_https("https://api.github.com/repos/owner/repo/releases/latest", {"Authorization": "Bearer gho_test"}):
+                self.assertEqual(first.request.call_args.kwargs["headers"]["Authorization"], "Bearer gho_test")
+                self.assertNotIn("Authorization", second.request.call_args.kwargs["headers"])
+
+
+class GitHubAuthTests(IsolatedAsyncioTestCase):
+    def test_build_configuration_rejects_oauth_secrets_and_tokens(self):
+        self.assertTrue(is_client_id("Ov23" + "A" * 16))
+        self.assertTrue(is_client_id("a" * 20))
+        for value in ("a" * 40, "gho_" + "B" * 36, "github_pat_" + "B" * 50):
+            with self.subTest(value=value):
+                self.assertFalse(is_client_id(value))
+
+    def setUp(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "settings" / "github-session.json"
+        self.auth = GitHubAuth(self.path, "OauthClientId")
+        self.device = {"device_code": "backend-only", "user_code": "ABCD-1234", "verification_uri": DEVICE_URL,
+                       "interval": 5, "expires_in": 900}
+        self.grant = {"access_token": "gho_test", "token_type": "bearer", "scope": ""}
+
+    async def test_device_login_respects_poll_interval_and_persists_private_token(self):
+        with mock.patch("github_auth.oauth_post", side_effect=[self.device, {"error": "slow_down"}, self.grant]) as request:
+            started = await self.auth.start()
+            self.assertEqual(set(started), {"status", "id", "code", "url", "retry_in"})
+            self.assertEqual(started["code"], "ABCD-1234")
+            self.assertEqual(started["url"], DEVICE_URL)
+            self.assertEqual((await self.auth.poll(started["id"]))["status"], "waiting")
+            request.assert_called_once_with("device/code", client_id="OauthClientId", scope="")
+            self.auth.session["next_poll"] = 0
+            self.assertEqual(await self.auth.poll(started["id"]), {"status": "waiting", "retry_in": 10})
+            self.assertEqual((await self.auth.poll(started["id"]))["status"], "waiting")
+            self.assertEqual(request.call_count, 2)
+            self.auth.session["next_poll"] = 0
+            self.assertEqual(await self.auth.poll(started["id"]), {"status": "connected"})
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+        self.assertEqual(GitHubAuth(self.path, "OauthClientId").token(), "gho_test")
+        self.assertIsNone(GitHubAuth(self.path, "DifferentClientId").token())
+        self.assertEqual(self.auth.status(), {"available": True, "connected": True})
+        self.auth.sign_out()
+        self.assertFalse(self.path.exists())
+        self.assertIsNone(self.auth.token())
+
+    async def test_unconfigured_canceled_and_overprivileged_logins_never_store_token(self):
+        self.assertEqual(await GitHubAuth(self.path, "").start(), {"status": "unavailable"})
+        with mock.patch("github_auth.oauth_post", side_effect=[self.device, self.device, {**self.grant, "scope": "repo"}]) as request:
+            first = await self.auth.start()
+            self.auth.cancel(first["id"])
+            self.assertEqual(await self.auth.poll(first["id"]), {"status": "expired"})
+            self.assertEqual(request.call_count, 1)
+            restarted = await self.auth.start()
+            self.auth.session["next_poll"] = 0
+            self.assertEqual(await self.auth.poll(restarted["id"]), {"status": "error"})
+        self.assertFalse(self.path.exists())
+
+    async def test_device_flow_disabled_is_reported_from_http_400(self):
+        response = mock.MagicMock(status=400)
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"error":"device_flow_disabled"}'
+        with mock.patch("github_auth.https_request", return_value=response):
+            self.assertEqual(await self.auth.start(), {"status": "device_flow_disabled"})
+            self.assertIsNone(self.auth.session)
+            response.read.return_value = b'{"device_code":"invalid-on-error"}'
+            self.assertEqual(await self.auth.start(), {"status": "error"})
+
+    def test_oauth_posts_only_to_fixed_github_endpoint_without_redirects(self):
+        response = mock.MagicMock(status=200)
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"error":"authorization_pending"}'
+        with mock.patch("github_auth.https_request", return_value=response) as request:
+            self.assertEqual(oauth_post("oauth/access_token", device_code="local"), {"error": "authorization_pending"})
+        self.assertEqual(request.call_args.args[0], "https://github.com/login/oauth/access_token")
+        self.assertEqual(request.call_args.kwargs, {"method": "POST", "body": b"device_code=local"})
+
+
 class PhoneTests(TestCase):
     def test_english_phone_form_includes_english_validation(self):
         session = PhoneInput("127.0.0.1", "repository", repository_from_url, language="en")
@@ -301,6 +418,133 @@ class PhoneTests(TestCase):
 
 
 class PluginTests(IsolatedAsyncioTestCase):
+    def make_backend(self, count):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        base = Path(directory.name)
+        environment = {"DECKY_PLUGIN_DIR": str(base / "plugins" / "Updater"),
+                       "DECKY_PLUGIN_SETTINGS_DIR": str(base / "settings"),
+                       "DECKY_PLUGIN_RUNTIME_DIR": str(base / "data"),
+                       "UMEYC_GITHUB_CLIENT_ID": "Ov23" + "A" * 16}
+        for index in range(count):
+            name = f"Plugin-{index:03}"
+            folder = base / "plugins" / name
+            folder.mkdir(parents=True)
+            (folder / "plugin.json").write_text(json.dumps({"name": name}))
+            (folder / "package.json").write_text('{"version":"1.0.0"}')
+        with mock.patch.dict(os.environ, environment):
+            backend = Plugin()
+        return backend, environment
+
+    async def test_manual_check_resumes_after_60_across_restarts_with_daily_off(self):
+        backend, environment = self.make_backend(65)
+        names = [f"Plugin-{index:03}" for index in range(65)]
+        for name in names:
+            await backend.watch(name, f"https://github.com/owner/{name}")
+        release = {"tag": "v1.1.0", "asset": asset("Plugin.zip")}
+        with mock.patch("main.time.time", return_value=1000) as clock, \
+                mock.patch("main.latest_release", return_value=release) as request:
+            first = await backend.check()
+            self.assertEqual(first["checked_names"], names[:60])
+            self.assertEqual(first["check_pending"], 5)
+            self.assertEqual(first["check_retry_at"], 4600)
+            self.assertEqual(first["last_checked"], 0)
+            self.assertEqual(first["watches"][-1]["status"], "unchecked")
+            self.assertEqual(len(await backend.take_notifications()), 60)
+            with mock.patch.dict(os.environ, environment):
+                backend = Plugin()
+            self.assertFalse((await backend.state())["daily"])
+            self.assertEqual((await backend.check())["checked_names"], [])
+            self.assertEqual((await backend.check_plugin(names[-1]))["checked_names"], [])
+            self.assertEqual(await backend._check(True), [])
+            self.assertEqual(request.call_count, 60)
+            clock.return_value = 4600
+            self.assertTrue(backend._scheduled_check_due())
+            self.assertEqual(await backend._check(True), names[60:])
+            self.assertEqual(request.call_count, 65)
+            self.assertEqual(len(await backend.take_notifications()), 5)
+            finished = await backend.state()
+            self.assertEqual(finished["check_pending"], 0)
+            self.assertEqual(finished["last_checked"], 4600)
+            self.assertFalse(backend._scheduled_check_due())
+
+    async def test_daily_check_stops_at_header_limit_and_sign_in_resumes_it(self):
+        backend, _ = self.make_backend(3)
+        names = [f"Plugin-{index:03}" for index in range(3)]
+        for name in names:
+            await backend.watch(name, f"https://github.com/owner/{name}")
+        await backend.set_daily(True)
+        backend._save(last_checked=-100_000)
+
+        def fetch(repo, name, token=None, rate_limit=None):
+            if rate_limit is not None:
+                rate_limit.update(remaining=0, reset_at=1060)
+            return {"tag": "v1.0.0", "asset": asset(f"{name}.zip")}
+
+        with mock.patch("main.time.time", return_value=1000), mock.patch("main.latest_release", side_effect=fetch) as request:
+            self.assertEqual(await backend._check(True), names[:1])
+            self.assertEqual((await backend.state())["check_retry_at"], 1061)
+            self.assertEqual((await backend.state())["last_checked"], -100_000)
+            await backend.set_daily(False)
+            self.assertFalse((await backend.state())["check_auto_resume"])
+            backend.github._store("gho_test", 0)
+            self.assertEqual(await backend._check(True), [])
+            self.assertEqual(request.call_count, 1)
+            await backend.set_daily(True)
+            self.assertEqual(await backend._check(True), names[1:])
+            self.assertEqual(request.call_count, 3)
+            self.assertEqual(request.call_args.kwargs, {"token": "gho_test"})
+
+    async def test_rate_limited_plugin_stays_queued_with_cached_release(self):
+        backend, _ = self.make_backend(2)
+        first, second = "Plugin-000", "Plugin-001"
+        release = {"tag": "v1.1.0", "asset": asset("Plugin.zip")}
+        backend._save(watches={first: {"repo": "owner/first", "release": release}, second: {"repo": "owner/second"}})
+
+        def throttle(repo, name, rate_limit):
+            rate_limit.update(remaining=15, reset_at=4000, retry_after=90)
+            return {"error": "releaseRateLimit"}
+
+        with mock.patch("main.time.time", return_value=1000) as clock, \
+                mock.patch("main.latest_release", side_effect=throttle) as request:
+            state = await backend.check()
+            self.assertEqual(state["checked_names"], [])
+            self.assertEqual(state["check_pending"], 2)
+            self.assertEqual(state["check_retry_at"], 1090)
+            self.assertEqual(state["watches"][0]["release"], release)
+            self.assertEqual(await backend._check(True), [])
+            request.assert_called_once()
+            await backend.unwatch(second)
+            clock.return_value = 1090
+            request.side_effect = None
+            request.return_value = release
+            self.assertEqual(await backend._check(True), [first])
+            self.assertEqual(request.call_count, 2)
+
+    async def test_release_check_uses_local_login_until_sign_out(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            folder = base / "plugins" / "Test"
+            folder.mkdir(parents=True)
+            (folder / "plugin.json").write_text('{"name":"Test"}')
+            (folder / "package.json").write_text('{"version":"1.0.0"}')
+            with mock.patch.dict(os.environ, {"DECKY_PLUGIN_DIR": str(base / "plugins" / "Updater"),
+                                             "DECKY_PLUGIN_SETTINGS_DIR": str(base / "settings"),
+                                             "DECKY_PLUGIN_RUNTIME_DIR": str(base / "data"),
+                                             "UMEYC_GITHUB_CLIENT_ID": "Ov23" + "A" * 16}):
+                backend = Plugin()
+            await backend.watch("Test", "https://github.com/owner/test")
+            backend.github._store("gho_test", 0)
+            with mock.patch("main.latest_release", return_value={"tag": "v1.0.0", "asset": asset("Test.zip")}) as request:
+                result = await backend.check()
+                self.assertEqual(result["github"], {"available": True, "connected": True})
+                self.assertNotIn("gho_test", json.dumps(result))
+                request.assert_called_once_with("owner/test", "Test", token="gho_test")
+                self.assertEqual(await backend.sign_out_github(), {"status": "signed_out"})
+                result = await backend.check_plugin("Test")
+                self.assertFalse(result["github"]["connected"])
+                self.assertEqual(request.call_args, mock.call("owner/test", "Test", rate_limit={}))
+
     async def test_prepare_returns_localized_timeout_and_allows_retry(self):
         with TemporaryDirectory() as directory:
             base = Path(directory)
@@ -394,7 +638,7 @@ class PluginTests(IsolatedAsyncioTestCase):
                         await backend.check_plugin("Absent")
                     with self.assertRaisesRegex(ValueError, "no longer watched"):
                         await backend.check_plugin("Absent", "en")
-                    request.assert_called_once_with("owner/selected", "Selected")
+                    request.assert_called_once_with("owner/selected", "Selected", rate_limit={})
 
                 result = await Plugin().state()
                 self.assertEqual(result["last_checked"], 123)

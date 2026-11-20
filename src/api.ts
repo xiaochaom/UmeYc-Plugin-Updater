@@ -18,7 +18,13 @@ export type Watch = {
   status: 'missing' | 'unchecked' | 'error' | 'unknown' | 'current' | 'update' | 'no_asset';
   release: Release | { error: string; http_status?: number } | null;
 };
-export type State = { daily: boolean; last_checked: number; installed: Installed[]; watches: Watch[] };
+export type State = {
+  daily: boolean; last_checked: number; installed: Installed[]; watches: Watch[];
+  github: { available: boolean; connected: boolean };
+  check_pending: number; check_retry_at: number; check_auto_resume: boolean; checked_names?: string[];
+};
+type GitHubLoginEnd = { status: 'connected' | 'unavailable' | 'device_flow_disabled' | 'expired' | 'denied' | 'error' };
+type GitHubLoginWaiting = { status: 'waiting'; retry_in: number };
 export type PhoneMode = 'repository' | 'zip';
 export type Candidate = {
   name: string; version: string; folder: string; root: boolean; artifact: string; sha256: string; kind: number;
@@ -38,6 +44,12 @@ declare global {
 export const getState = callable<[], State>('state');
 export const setDaily = callable<[boolean], State>('set_daily');
 export const check = callable<[], State>('check');
+export const startGitHubLogin = callable<[], GitHubLoginEnd | (GitHubLoginWaiting & {
+  id: string; code: string; url: string;
+})>('start_github_login');
+export const pollGitHubLogin = callable<[string], GitHubLoginEnd | GitHubLoginWaiting>('poll_github_login');
+export const cancelGitHubLogin = callable<[string]>('cancel_github_login');
+export const signOutGitHub = callable<[], { status: 'signed_out' | 'error' }>('sign_out_github');
 export const takeNotifications = callable<[], { name: string; tag: string }[]>('take_notifications');
 export const checkPlugin = localized<[string], State>('check_plugin');
 export const watchPlugin = localized<[string, string], State>('watch');

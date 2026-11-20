@@ -12,6 +12,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from downloads import download_zip, https_url, inspect_zip, manifest_field, read_manifest
+from github_auth import GitHubAuth, configured_client_id
 from messages import localized, message
 from phone_input import PhoneInput, lan_address
 from releases import latest_release, release_status, repository_from_url, repository_hint, version_key
@@ -19,7 +20,16 @@ from releases import latest_release, release_status, repository_from_url, reposi
 
 CHECK_INTERVAL = 24 * 60 * 60
 ZIP_RETENTION = 30 * 60
-MAX_WATCHES = 30
+ANONYMOUS_LIMIT = 60
+ANONYMOUS_WINDOW = 60 * 60
+MAX_WATCHES = 200
+
+
+def anonymous_retry_at(quota, now):
+    if not quota:
+        return 0
+    until = max(quota.get("retry_at", 0), quota["reset_at"] if quota["remaining"] == 0 else 0)
+    return until if until > now else 0
 
 
 def installed_plugins(root):
@@ -79,10 +89,12 @@ class Plugin:
     def __init__(self):
         self.plugin_dir = Path(os.environ["DECKY_PLUGIN_DIR"]).parent
         self.settings_path = Path(os.environ["DECKY_PLUGIN_SETTINGS_DIR"]) / "updater.json"
+        self.github = GitHubAuth(self.settings_path.with_name("github-session.json"), configured_client_id())
         self.staging = Path(os.environ["DECKY_PLUGIN_RUNTIME_DIR"]) / "staged-zips"
-        self.settings = {"daily": False, "last_checked": 0, "watches": {}}
+        self.settings = {"daily": False, "last_checked": 0, "watches": {}, "check_queue": None,
+                         "check_manual": False, "anonymous_quota": None}
         if self.settings_path.exists():
-            self.settings.update(read_manifest(self.settings_path, limit=5 * 1024**2))
+            self.settings.update(read_manifest(self.settings_path, limit=32 * 1024**2))
         self.check_lock = asyncio.Lock()
         self.download_lock = asyncio.Lock()
         self.phone_lock = asyncio.Lock()
@@ -117,8 +129,7 @@ class Plugin:
         while True:
             self.wake.clear()
             self._clean_staging()
-            if (self.settings["daily"] and self.settings["watches"]
-                    and time.time() - self.settings["last_checked"] >= CHECK_INTERVAL):
+            if self._scheduled_check_due():
                 with suppress(OSError):
                     await self._check(True)
                     await decky.emit("updates_changed")
@@ -126,6 +137,16 @@ class Plugin:
                 await asyncio.wait_for(self.wake.wait(), timeout=60)
             except asyncio.TimeoutError:
                 pass
+
+    def _anonymous_retry_at(self):
+        return anonymous_retry_at(self.settings["anonymous_quota"], time.time())
+
+    def _scheduled_check_due(self):
+        if not self.settings["watches"] or (self._anonymous_retry_at() and not self.github.token()):
+            return False
+        if self.settings["check_queue"] is not None:
+            return self.settings["check_manual"] or self.settings["daily"]
+        return self.settings["daily"] and time.time() - self.settings["last_checked"] >= CHECK_INTERVAL
 
     async def state(self):
         plugins = installed_plugins(self.plugin_dir)
@@ -136,8 +157,31 @@ class Plugin:
             version = installed.get(name)
             watches.append({"name": name, "repo": source["repo"], "version": version,
                             "status": release_status(version, release), "release": release})
+        github = self.github.status()
         return {"daily": self.settings["daily"], "last_checked": self.settings["last_checked"],
-                "installed": plugins, "watches": watches}
+                "installed": plugins, "watches": watches, "github": github,
+                "check_pending": len(self.settings["check_queue"] or []),
+                "check_retry_at": 0 if github["connected"] else self._anonymous_retry_at(),
+                "check_auto_resume": self.settings["check_manual"] or self.settings["daily"]}
+
+    async def start_github_login(self):
+        return await self.github.start()
+
+    async def poll_github_login(self, session_id):
+        result = await self.github.poll(session_id)
+        if result["status"] == "connected":
+            self.wake.set()
+        return result
+
+    async def cancel_github_login(self, session_id):
+        self.github.cancel(session_id)
+
+    async def sign_out_github(self):
+        try:
+            self.github.sign_out()
+        except OSError:
+            return {"status": "error"}
+        return {"status": "signed_out"}
 
     async def set_daily(self, enabled):
         self._save(daily=enabled is True)
@@ -151,59 +195,105 @@ class Plugin:
             raise ValueError(message("请选择已安装插件", "Select an installed plugin."))
         watches = self.settings["watches"]
         if name not in watches and len(watches) >= MAX_WATCHES:
-            raise ValueError(message("最多监听 30 个插件", "You can watch up to 30 plugins."))
+            raise ValueError(message(f"最多监听 {MAX_WATCHES} 个插件", f"You can watch up to {MAX_WATCHES} plugins."))
         if watches.get(name, {}).get("repo") != repo:
-            self._save(watches={**watches, name: {"repo": repo}})
+            queue = self.settings["check_queue"]
+            self._save(watches={**watches, name: {"repo": repo}},
+                       check_queue=[*queue, name] if queue is not None and name not in queue else queue)
         self.wake.set()
         return await self.state()
 
     async def unwatch(self, name):
-        self._save(watches={key: value for key, value in self.settings["watches"].items() if key != name})
+        watches = {key: value for key, value in self.settings["watches"].items() if key != name}
+        queue = self.settings["check_queue"]
+        pending = [target for target in queue if target != name] if queue is not None else None
+        changes = {"watches": watches, "check_queue": pending or None}
+        if pending == []:
+            changes.update(last_checked=time.time() if watches else 0, check_manual=False)
+        self._save(**changes)
         return await self.state()
 
     async def check(self):
-        await self._check(False)
-        return await self.state()
+        checked = await self._check(False)
+        return {**await self.state(), "checked_names": checked}
 
     @localized
     async def check_plugin(self, name, language="zh"):
         if not isinstance(name, str):
             raise ValueError(message("请选择要检查的监听插件", "Select a watched plugin to check."))
-        await self._check(False, name)
-        return await self.state()
+        checked = await self._check(False, name)
+        return {**await self.state(), "checked_names": checked}
 
     async def _check(self, daily, name=None):
         async with self.check_lock:
-            if daily and (not self.settings["daily"] or time.time() - self.settings["last_checked"] < CHECK_INTERVAL):
-                return
-            targets = dict(self.settings["watches"])
+            if daily and not self._scheduled_check_due():
+                return []
+            sources = self.settings["watches"]
+            queue = self.settings["check_queue"]
             if name is not None:
-                if name not in targets:
+                if name not in sources:
                     raise ValueError(message("此插件已不在监听列表中", "This plugin is no longer watched."))
-                targets = {name: targets[name]}
-            if not targets:
-                return
+                targets = {name: sources[name]}
+            else:
+                targets = {target: sources[target] for target in (sources if queue is None else queue) if target in sources}
+            if not sources:
+                return []
             results = {}
+            token = self.github.token()
+            quota = self.settings["anonymous_quota"]
+            if not token and targets:
+                if not quota or quota["reset_at"] <= time.time():
+                    quota = {"remaining": ANONYMOUS_LIMIT, "reset_at": time.time() + ANONYMOUS_WINDOW,
+                             "retry_at": (quota or {}).get("retry_at", 0)}
+                else:
+                    quota = dict(quota)
             for target, source in targets.items():
                 repo = source["repo"]
+                rate_limit = {}
+                if not token:
+                    if not quota["remaining"] or anonymous_retry_at(quota, time.time()):
+                        break
+                    quota["remaining"] -= 1
                 try:
-                    release = await asyncio.to_thread(latest_release, repo, target)
+                    if token:
+                        release = await asyncio.to_thread(latest_release, repo, target, token=token)
+                    else:
+                        release = await asyncio.to_thread(latest_release, repo, target, rate_limit=rate_limit)
                 except (TimeoutError, socket.timeout):
                     release = {"error": "releaseTimeout"}
                 except ssl.SSLError:
                     release = {"error": "releaseTlsError"}
                 except (OSError, HTTPException, ValueError, KeyError, TypeError):
                     release = {"error": "releaseNetworkError"}
+                if not token:
+                    remaining = rate_limit.get("remaining")
+                    reset_at = rate_limit.get("reset_at")
+                    if remaining is not None:
+                        quota["remaining"] = min(quota["remaining"], remaining)
+                    if reset_at and reset_at >= time.time():
+                        quota["reset_at"] = reset_at + 1
+                    if release.get("error") == "releaseRateLimit":
+                        retry_after = rate_limit.get("retry_after")
+                        if retry_after is not None or remaining != 0:
+                            quota["retry_at"] = time.time() + max(1, retry_after if retry_after is not None else 60)
+                        break
                 results[target] = {**source, "release": release}
-            installed = {plugin["name"]: plugin["version"] for plugin in installed_plugins(self.plugin_dir)}
             watches = self.settings["watches"]
             retained = {target: result for target, result in results.items() if watches.get(target) is targets[target]}
-            for target, result in retained.items():
-                result["notification_pending"] = should_notify(installed.get(target), result["release"], result.get("notified_tag"))
+            if retained:
+                installed = {plugin["name"]: plugin["version"] for plugin in installed_plugins(self.plugin_dir)}
+                for target, result in retained.items():
+                    result["notification_pending"] = should_notify(installed.get(target), result["release"], result.get("notified_tag"))
+            changes = {"watches": {**watches, **retained}, "anonymous_quota": quota}
             if name is None:
-                self._save(watches={**watches, **retained}, last_checked=time.time())
-            elif retained:
-                self._save(watches={**watches, **retained})
+                pending = [target for target in watches if target not in retained
+                           and (target in targets or watches[target] is not sources.get(target))]
+                changes.update(check_queue=pending or None,
+                               check_manual=bool(pending) and (not daily or self.settings["check_manual"]))
+                if not pending:
+                    changes["last_checked"] = time.time()
+            self._save(**changes)
+            return list(retained)
 
     async def take_notifications(self):
         async with self.check_lock:

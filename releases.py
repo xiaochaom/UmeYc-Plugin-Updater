@@ -1,3 +1,4 @@
+from contextlib import suppress
 import json
 import re
 from urllib.parse import urlsplit
@@ -66,15 +67,35 @@ def version_key(value):
     return (*map(int, match.group(1, 2, 3)), prerelease is None, ordering)
 
 
-def latest_release(repo, plugin_name):
-    with open_https(f"https://api.github.com/repos/{repo}/releases/latest", {
+def _integer_header(response, name):
+    value = response.getheader(name)
+    return int(value) if isinstance(value, str) and re.fullmatch(r"[0-9]{1,12}", value) else None
+
+
+def latest_release(repo, plugin_name, token=None, rate_limit=None):
+    headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-    }) as response:
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    with open_https(f"https://api.github.com/repos/{repo}/releases/latest", headers) as response:
+        remaining = _integer_header(response, "X-RateLimit-Remaining") if rate_limit is not None or response.status == 403 else None
+        retry_after = _integer_header(response, "Retry-After") if response.status in (403, 429) else None
+        if rate_limit is not None:
+            rate_limit.update(remaining=remaining, reset_at=_integer_header(response, "X-RateLimit-Reset"),
+                              retry_after=retry_after)
+        if token and response.status == 401:
+            return {"error": "releaseAuthExpired"}
         if response.status == 404:
             return {"error": "releaseNotFound"}
-        if response.status == 429 or (response.status == 403 and response.getheader("X-RateLimit-Remaining") == "0"):
+        if response.status == 429 or (response.status == 403 and (remaining == 0 or retry_after is not None)):
             return {"error": "releaseRateLimit"}
+        if response.status == 403:
+            with suppress(ValueError, AttributeError):
+                detail = json.loads(response.read(8192)).get("message")
+                if isinstance(detail, str) and "secondary rate limit" in detail.lower():
+                    return {"error": "releaseRateLimit"}
         if response.status != 200:
             return {"error": "releaseHttpError", "http_status": response.status}
         payload = response.read(2_000_001)

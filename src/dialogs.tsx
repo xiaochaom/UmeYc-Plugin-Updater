@@ -4,10 +4,11 @@ import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import qrcode from 'qrcode-generator';
 import {
-  checkPlugin, errorText, pollPhone, prepareInstall, prepareUpdate, requestInstall, startPhone, stopPhone, unwatchPlugin, watchPlugin,
+  cancelGitHubLogin, checkPlugin, errorText, pollGitHubLogin, pollPhone, prepareInstall, prepareUpdate, requestInstall,
+  startGitHubLogin, startPhone, stopPhone, unwatchPlugin, watchPlugin,
 } from './api';
 import type { Candidate, PhoneMode, State, Watch } from './api';
-import { assetError, copy, releaseError } from './i18n';
+import { assetError, checkProgress, copy, releaseError } from './i18n';
 import { showPackageFailure, showUpdateNotifications } from './notifications';
 
 const layout = { display: 'flex', gap: 10, marginTop: 12 };
@@ -29,6 +30,67 @@ function Dialog({ title, children, closeModal, busy, actions, error }: ModalRoot
       </Focusable>
     </ModalRoot>
   );
+}
+
+export function GitHubLoginDialog({ closeModal, onChange }: ModalRootProps & { onChange: () => void }) {
+  const text = copy();
+  const [attempt, setAttempt] = useState(0);
+  const [challenge, setChallenge] = useState<{ code: string; url: string; qr: string }>();
+  const [status, setStatus] = useState('starting');
+  useEffect(() => {
+    let closed = false;
+    let sessionId: string | undefined;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (next: string) => {
+      if (closed) return;
+      setStatus(next);
+      if (next === 'connected') onChange();
+    };
+    const poll = (id: string, delay: number) => {
+      timer = setTimeout(async () => {
+        try {
+          const result = await pollGitHubLogin(id);
+          if (closed) return;
+          if (result.status === 'waiting') poll(id, result.retry_in);
+          else finish(result.status);
+        } catch { finish('error'); }
+      }, Math.ceil(delay * 1000));
+    };
+    setStatus('starting');
+    setChallenge(undefined);
+    void startGitHubLogin().then((result) => {
+      if (result.status !== 'waiting') { finish(result.status); return; }
+      sessionId = result.id;
+      if (closed) { void cancelGitHubLogin(sessionId).catch(() => {}); return; }
+      const qr = qrcode(0, 'M');
+      qr.addData(result.url);
+      qr.make();
+      setChallenge({ code: result.code, url: result.url, qr: qr.createDataURL(5, 10) });
+      setStatus('waiting');
+      poll(sessionId, result.retry_in);
+    }).catch(() => finish('error'));
+    return () => {
+      closed = true;
+      clearTimeout(timer);
+      if (sessionId) void cancelGitHubLogin(sessionId).catch(() => {});
+    };
+  }, [attempt, onChange]);
+
+  const failure = { expired: text.githubLoginExpired, denied: text.githubLoginDenied,
+    unavailable: text.githubLoginUnavailable, device_flow_disabled: text.githubLoginDeviceFlowDisabled,
+    error: text.githubLoginError }[status];
+  return <Dialog title={text.githubSignIn} closeModal={closeModal} error={failure} actions={failure && status !== 'unavailable' &&
+    <DialogButton onClick={() => setAttempt(attempt + 1)}>{text.qrRegenerate}</DialogButton>}>
+    {status === 'starting' && <p role="status">{text.githubLoginStarting}</p>}
+    {status === 'connected' && <p role="status">{text.githubLoginConnected}</p>}
+    {status === 'waiting' && challenge && <>
+      <p>{text.githubLoginHint}</p>
+      <img src={challenge.qr} alt={challenge.url} style={{ width: 144, height: 144 }} />
+      <div>{challenge.url}</div>
+      <strong style={{ fontSize: 24, letterSpacing: 2 }}>{challenge.code}</strong>
+      <p role="status">{text.githubLoginWaiting}</p>
+    </>}
+  </Dialog>;
 }
 
 function PhoneInput({ mode, receive }: { mode: PhoneMode; receive: (url: string) => void }) {
@@ -216,6 +278,7 @@ export function WatchDetailsDialog({ initialItem, onChange, onEdit, closeModal }
     const state = await checkPlugin(item.name);
     void showUpdateNotifications();
     onChange(state);
+    if (!state.checked_names?.length && state.check_retry_at) setError(checkProgress(0, state.check_retry_at, false));
     const checked = state.watches.find((watch) => watch.name === item.name);
     if (checked) setItem(checked);
     else closeModal?.();

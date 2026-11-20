@@ -15,6 +15,12 @@ ZIP 下载或校验失败时，弹窗会显示原因，并发一条 Decky 通知
 
 点 **手动检查** 后，按钮下方会显示检查进度、成功和失败数量、可更新数量，以及失败原因。检查时间有更新不代表所有插件都检查成功。
 
+### GitHub 登录（可选）
+
+点首页 **登录 GitHub**，用手机扫二维码打开 GitHub，并输入 Deck 上的设备码。插件仅请求读取公开信息的授权，不读取私有仓库，也不在 Deck 上收集密码。授权后检查 Release 会使用 GitHub 账号额度；退出会删除 Deck 上的本地令牌，恢复匿名检查。若要撤销 GitHub 端的授权，到 [已授权的 OAuth Apps](https://github.com/settings/applications) 移除该应用。
+
+最多可监听 200 个插件。GitHub 匿名额度通常是每个出口 IP 每小时 60 次请求，共享代理可能更早用完。手动和每日检查都会在额度用完时保存进度，按 GitHub 提供的时间等待恢复，再检查剩余插件；首页会显示剩余数量和续查时间。手动发起的分批检查即使没开启每日检查，也会在 Decky 运行时自动续查。
+
 DeckyClash 等 TUN 代理使用 `198.18.0.0/15` 的 Fake-IP 时，GitHub Release 检查和下载无需额外配置。此兼容仅适用于 GitHub 官方 Release 域名，仍校验 HTTPS 证书。使用其他 ZIP 来源时仍需使用公开 HTTPS 地址；如该域名被解析成 Fake-IP，可将它加入代理的 `fake-ip-filter`。
 
 扫码只在打开对应弹窗时启动局域网输入页；链接一次有效、5 分钟过期。请只在可信的 Wi-Fi 和设备上扫码，避免发送带鉴权令牌的链接。结构校验和哈希校验不意味着插件代码可信，只安装你信任的发布者。通过 Decky 安装可能替换现有同名插件，请按目标插件文档备份重要设置。
@@ -42,5 +48,7 @@ pnpm package
 ```
 
 用户可从 [GitHub Releases](https://github.com/xiaochaom/UmeYc-Plugin-Updater/releases/latest) 下载 `UmeYc-Plugin-Updater.zip`，在 Decky 的开发者设置使用 **从 ZIP 安装插件**，也可复制 ZIP 成品链接，使用 **从 URL 安装插件**。自行构建的安装包位于 `out/UmeYc-Plugin-Updater.zip`。发布时推送与 `package.json` 版本一致的附注标签（例如 `v0.1.8`）；GitHub Actions 会使用标签附注作为发布说明，测试通过后上传编译好的 ZIP 和校验和。
+
+官方发布的安装包包含公开的 **Client ID**，用户无需配置。维护者可用仓库的 Actions 变量 `UMEYC_GITHUB_CLIENT_ID` 覆盖默认值。自行构建时，可在运行 `pnpm package` 时传入同名环境变量，值应为在 [GitHub Developer Settings](https://github.com/settings/developers) 中开启了 **Enable Device Flow** 的 **OAuth App** 的 Client ID。不要配置或分发 Client Secret。未配置 Client ID 的本地构建只能匿名检查。
 
 界面与局域网扫码交互参考 [UmeYc-Portal](https://github.com/xiaochaom/UmeYc-Portal)。

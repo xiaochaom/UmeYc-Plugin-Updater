@@ -15,6 +15,12 @@ If downloading or verifying a ZIP fails, the dialog shows the reason and Decky s
 
 Below **Check all**, the plugin shows when a check is running, how many checks succeeded or failed, how many updates can be installed, and why checks failed. A new check timestamp does not mean every check succeeded.
 
+### Optional GitHub sign-in
+
+Choose **Sign in to GitHub**, scan the QR code on your phone, and enter the device code displayed on the Deck. The plugin requests read-only access to public information, not private repositories, and never asks for your password on the Deck. Release checks then use your GitHub account quota. Signing out removes the local token and returns to anonymous checks. To revoke authorization on GitHub, remove the app from [Authorized OAuth Apps](https://github.com/settings/applications).
+
+You can watch up to 200 plugins. GitHub normally allows 60 anonymous requests per hour per public IP; a shared proxy can run out earlier. Manual and daily checks save their progress when quota runs out and resume with the remaining plugins once GitHub allows it. The home screen shows how many are left and when checking can resume. A manually started batch resumes while Decky is running even if daily checks are off.
+
 GitHub release checks and downloads work with DeckyClash and other TUN proxies using Fake-IP addresses in `198.18.0.0/15`, without additional configuration. This applies only to official GitHub release hosts, and HTTPS certificate verification remains enabled. Other ZIP sources must resolve to public addresses; if your proxy returns a Fake-IP for one, add that hostname to its `fake-ip-filter`.
 
 By default the plugin follows Steam's interface language: it uses Simplified Chinese for Chinese and English for other languages. Choose **Language / 界面语言** on the home screen to select a language manually or switch back to **System default**. The current language applies to plugin dialogs, the phone form, and update notifications. GitHub release notes remain in their original language. Decky's own install dialog follows Steam's interface language.
@@ -42,5 +48,7 @@ pnpm package
 ```
 
 Download `UmeYc-Plugin-Updater.zip` from [GitHub Releases](https://github.com/xiaochaom/UmeYc-Plugin-Updater/releases/latest) and use Decky's developer option to install from ZIP, or copy the ZIP asset URL and install from URL. If you build the package yourself, use `out/UmeYc-Plugin-Updater.zip`. To publish, push an annotated tag matching the version in `package.json` (for example, `v0.1.8`). GitHub Actions uses the tag annotation as release notes and uploads the built ZIP and checksum after the tests pass.
+
+Official releases include the public **Client ID**, so users do not need to configure anything. Maintainers can override the default with the repository Actions variable `UMEYC_GITHUB_CLIENT_ID`. For local builds, set the same environment variable when running `pnpm package` to the Client ID of an **OAuth App** with **Enable Device Flow** selected in [GitHub Developer Settings](https://github.com/settings/developers). Never configure or distribute a Client Secret. Local builds without a Client ID support anonymous checks only.
 
 The interface and LAN QR flow were inspired by [UmeYc-Portal](https://github.com/xiaochaom/UmeYc-Portal).

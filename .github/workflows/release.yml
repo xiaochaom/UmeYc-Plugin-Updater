@@ -28,6 +28,8 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm package
+        env:
+          UMEYC_GITHUB_CLIENT_ID: ${{ vars.UMEYC_GITHUB_CLIENT_ID || 'Ov23liPjOskiDkj7hvwK' }}
       - name: Verify ZIP and generate checksum
         working-directory: out
         run: |

@@ -70,7 +70,7 @@ class PublicHTTPSConnection(HTTPSConnection):
 
 
 @contextmanager
-def open_https(url, headers=None):
+def https_request(url, headers=None, *, method="GET", body=None, follow_redirects=False):
     request_headers = {"User-Agent": "UmeYc-Plugin-Updater", **(headers or {})}
     context = ssl.create_default_context()
     for system_ca in ("/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem"):
@@ -84,19 +84,26 @@ def open_https(url, headers=None):
             target = parsed.path or "/"
             if parsed.query:
                 target += "?" + parsed.query
-            connection.request("GET", target, headers=request_headers)
+            connection.request(method, target, body=body, headers=request_headers)
             with connection.getresponse() as response:
-                if response.status in {301, 302, 303, 307, 308}:
+                if follow_redirects and response.status in {301, 302, 303, 307, 308}:
                     location = response.getheader("Location")
                     if not location:
                         raise ValueError(message("下载服务器没有给出重定向地址", "The download server did not provide a redirect URL."))
                     url = urljoin(url, location)
+                    if https_url(url).hostname != parsed.hostname:
+                        request_headers = {key: value for key, value in request_headers.items()
+                                           if key.lower() != "authorization"}
                     continue
                 yield response
                 return
         finally:
             connection.close()
     raise ValueError(message("下载链接的重定向次数过多", "The download URL redirects too many times."))
+
+
+def open_https(url, headers=None):
+    return https_request(url, headers, follow_redirects=True)
 
 
 def _download_zip_once(url, output, deadline):

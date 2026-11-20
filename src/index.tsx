@@ -1,14 +1,14 @@
 import { addEventListener, definePlugin, removeEventListener, useQuickAccessVisible } from '@decky/api';
 import { ButtonItem, DialogButton, DropdownItem, PanelSection, PanelSectionRow, quickAccessMenuClasses, showModal, ToggleField } from '@decky/ui';
 import { useCallback, useEffect, useState } from 'react';
-import { check, errorText, getState, setDaily } from './api';
+import { check, errorText, getState, setDaily, signOutGitHub } from './api';
 import type { State } from './api';
-import { InstallDialog, WatchDetailsDialog, WatchDialog } from './dialogs';
-import { checkSummary, copy, getLanguage, getLanguagePreference, releaseError, saveLanguagePreference } from './i18n';
+import { GitHubLoginDialog, InstallDialog, WatchDetailsDialog, WatchDialog } from './dialogs';
+import { checkProgress, checkSummary, copy, getLanguage, getLanguagePreference, releaseError, saveLanguagePreference } from './i18n';
 import { showUpdateNotifications } from './notifications';
 
 const pluginName = 'UmeYc-Plugin-Updater';
-type CheckResult = { watches: State['watches'] } | { error: string };
+type CheckResult = { watches: State['watches']; partial: boolean } | { error: string };
 
 function Home() {
   const [state, setState] = useState<State>();
@@ -42,7 +42,10 @@ function Home() {
     try {
       const result = await action();
       setState(result);
-      if (kind === 'check') setCheckResult({ watches: result.watches });
+      if (kind === 'check') {
+        const checked = new Set(result.checked_names);
+        setCheckResult({ watches: result.watches.filter(({ name }) => checked.has(name)), partial: result.check_pending > 0 });
+      }
     } catch (cause) {
       if (kind === 'check') setCheckResult({ error: errorText(cause) });
       else setError(errorText(cause));
@@ -64,6 +67,17 @@ function Home() {
     void showUpdateNotifications();
     return checked;
   };
+  const github = state?.github;
+  const manageGitHub = () => {
+    if (github?.connected) {
+      void run('settings', async () => {
+        if ((await signOutGitHub()).status !== 'signed_out') throw new Error(text.unexpectedError);
+        return getState();
+      });
+    } else if (github?.available) {
+      showModal(<GitHubLoginDialog onChange={refresh} />);
+    }
+  };
   const checkedWatches = checkResult && 'watches' in checkResult ? checkResult.watches : [];
   const failureReasons = checkedWatches.flatMap(({ release }) =>
     release && 'error' in release ? [releaseError(release.error, release.http_status, locale)] : []);
@@ -72,7 +86,10 @@ function Home() {
   const failure = Boolean(checkResult && 'error' in checkResult) || failureReasons.length > 0;
   const feedback = operation === 'check' ? text.checking
     : checkResult && ('error' in checkResult ? `${text.error} · ${checkResult.error}`
-      : checkSummary(succeeded, failureReasons.length, updates, locale));
+      : checkResult.partial && !checkedWatches.length ? undefined
+      : checkSummary(succeeded, failureReasons.length, updates, locale, checkResult.partial));
+  const progress = state && (state.check_pending > 0 || state.check_retry_at > 0)
+    ? checkProgress(state.check_pending, state.check_retry_at, state.check_auto_resume, locale) : undefined;
   return <>
     <PanelSection title={text.updates}>
       <PanelSectionRow><ToggleField label={text.daily} checked={state?.daily ?? false} disabled={!state || busy}
@@ -86,6 +103,10 @@ function Home() {
           {[...new Set(failureReasons)].map((reason) => <div key={reason}>{reason}</div>)}
         </div>
       </PanelSectionRow>}
+      {progress && <PanelSectionRow><div role="status">{progress}</div></PanelSectionRow>}
+      {github && <PanelSectionRow><ButtonItem layout="below" disabled={busy || (!github.available && !github.connected)}
+        description={github.connected ? text.githubSignedIn : github.available ? text.githubAnonymous : text.githubLoginUnavailable}
+        onClick={manageGitHub}>{github.connected ? text.githubSignOut : text.githubSignIn}</ButtonItem></PanelSectionRow>}
       <PanelSectionRow><ButtonItem layout="below" disabled={!available.length || busy}
         description={state && !available.length ? text.noAvailablePlugins : undefined}
         onClick={addWatch}>{text.addWatch}</ButtonItem></PanelSectionRow>

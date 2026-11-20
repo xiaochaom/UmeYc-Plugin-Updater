@@ -39,6 +39,15 @@ const zh = {
   changeUrl: '更换地址', missing: '未安装', unchecked: '尚未检查', error: '检查失败',
   unknown: '无法比较版本', current: '未发现较新版本', update: '有可用更新', no_asset: '有较新版本，但没有可用的 ZIP',
   releaseNetworkError: '无法读取 GitHub Release，请检查网络后重试',
+  releaseAuthExpired: 'GitHub 登录已失效，请退出后重新登录',
+  githubSignIn: '登录 GitHub', githubSignOut: '退出 GitHub', githubSignedIn: '已登录 · 检查 Release 时使用账号额度',
+  githubAnonymous: '未登录 · 仍可匿名检查', githubLoginUnavailable: '此构建未配置 GitHub 设备码登录',
+  githubLoginDeviceFlowDisabled: '此 GitHub OAuth 应用未开启设备授权，请联系应用维护者。你仍可以匿名检查更新。',
+  githubLoginStarting: '正在向 GitHub 请求授权码…', githubLoginWaiting: '等待 GitHub 授权…',
+  githubLoginHint: '用手机扫码打开 GitHub，登录后输入 Deck 上的授权码。只授权读取公开信息，不在 Deck 上输入密码。',
+  githubLoginConnected: 'GitHub 已连接，可以返回首页手动检查。',
+  githubLoginDenied: '已取消 GitHub 授权。', githubLoginExpired: '授权码已过期，请重新生成。',
+  githubLoginError: 'GitHub 授权失败，请检查网络或稍后重试。',
   releaseTimeout: '连接 GitHub 超时，请检查网络或切换代理节点后重试',
   releaseTlsError: '与 GitHub 的 HTTPS 连接失败，请检查代理节点或 Deck 的日期和时间',
   releaseNotFound: '没有公开的正式 Release，或仓库不可用', releaseRateLimit: 'GitHub API 请求频率已达上限，请稍后重试',
@@ -73,6 +82,15 @@ const en: Record<keyof typeof zh, string> = {
   changeUrl: 'Change URL', missing: 'Not installed', unchecked: 'Not checked yet', error: 'Check failed',
   unknown: 'Cannot compare versions', current: 'No newer version found', update: 'Update available', no_asset: 'A newer version has no usable ZIP',
   releaseNetworkError: 'Could not read the GitHub release. Check your network and try again.',
+  releaseAuthExpired: 'GitHub authorization is no longer valid. Sign out and sign in again.',
+  githubSignIn: 'Sign in to GitHub', githubSignOut: 'Sign out of GitHub', githubSignedIn: 'Signed in · Release checks use your account quota',
+  githubAnonymous: 'Signed out · Anonymous checks are still available', githubLoginUnavailable: 'GitHub device sign-in is not configured in this build',
+  githubLoginDeviceFlowDisabled: 'Device Flow is disabled for this GitHub OAuth app. Contact the app maintainer. You can still check for updates anonymously.',
+  githubLoginStarting: 'Requesting a code from GitHub…', githubLoginWaiting: 'Waiting for GitHub authorization…',
+  githubLoginHint: 'Scan the QR code to open GitHub on your phone, then sign in and enter the code shown on the Deck. Only public read access is requested; do not enter your password on the Deck.',
+  githubLoginConnected: 'GitHub is connected. You can return to the home screen and check for updates.',
+  githubLoginDenied: 'GitHub authorization was canceled.', githubLoginExpired: 'The code expired. Request a new one.',
+  githubLoginError: 'GitHub authorization failed. Check your network or try again later.',
   releaseTimeout: 'The GitHub connection timed out. Check your network or change proxy servers and try again.',
   releaseTlsError: 'The HTTPS connection to GitHub failed. Check your proxy server or the Deck’s date and time.',
   releaseNotFound: 'No public stable release found, or the repository is unavailable.', releaseRateLimit: 'GitHub API rate limit reached. Try again later.',
@@ -92,20 +110,30 @@ export function copy(language = getLanguage()) {
   return language === 'zh' ? zh : en;
 }
 
-export function checkSummary(succeeded: number, failed: number, updates: number, language: Language) {
+export function checkSummary(succeeded: number, failed: number, updates: number, language: Language, partial: boolean) {
   if (!succeeded && !failed) return copy(language).noWatches;
   if (language === 'zh') {
     if (!succeeded) return `检查失败 · ${failed} 个插件均未能读取 Release`;
-    return `${failed ? '部分检查失败' : '检查完成'} · 成功 ${succeeded} · 失败 ${failed} · 可更新 ${updates}`;
+    return `${partial ? '本批结果' : failed ? '部分检查失败' : '检查完成'} · 成功 ${succeeded} · 失败 ${failed} · 可更新 ${updates}`;
   }
   if (!succeeded) return `Check failed · 0 succeeded · ${failed} failed`;
-  return `${failed ? 'Some checks failed' : 'Check complete'} · ${succeeded} succeeded · ${failed} failed · ${updates} updatable`;
+  return `${partial ? 'Batch results' : failed ? 'Some checks failed' : 'Check complete'} · ${succeeded} succeeded · ${failed} failed · ${updates} updatable`;
+}
+
+export function checkProgress(pending: number, retryAt: number, autoResume: boolean, language = getLanguage()) {
+  const remaining = language === 'zh' ? `剩余 ${pending} 个插件待检查` : `${pending} plugins left to check`;
+  if (!retryAt) return remaining;
+  const when = new Date(retryAt * 1000).toLocaleString(copy(language).locale, { dateStyle: 'short', timeStyle: 'short' });
+  if (!pending) return language === 'zh' ? `匿名额度暂不可用 · ${when} 后重试` : `Anonymous quota unavailable · Retry after ${when}`;
+  if (language === 'zh') return `${remaining} · ${when} 后${autoResume ? '自动续查' : '可手动续查'}`;
+  return `${remaining} · ${autoResume ? 'Resumes automatically' : 'Check again'} after ${when}`;
 }
 
 export function releaseError(code: string, httpStatus?: number, language = getLanguage()) {
   const text = copy(language);
   switch (code) {
     case 'releaseNetworkError': return text.releaseNetworkError;
+    case 'releaseAuthExpired': return text.releaseAuthExpired;
     case 'releaseTimeout': return text.releaseTimeout;
     case 'releaseTlsError': return text.releaseTlsError;
     case 'releaseNotFound': return text.releaseNotFound;
