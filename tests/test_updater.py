@@ -14,7 +14,7 @@ from unittest import IsolatedAsyncioTestCase, TestCase, mock
 from urllib.parse import urlencode
 from zipfile import ZipFile, ZipInfo
 
-from downloads import PublicHTTPSConnection, download_zip, https_url, inspect_zip
+from downloads import PublicHTTPSConnection, download_zip, https_url, inspect_zip, open_https
 from main import Plugin, install_type, installed_plugins
 from phone_input import PhoneInput
 from releases import latest_release, release_status, repository_from_url, version_key
@@ -195,6 +195,42 @@ class ZipTests(TestCase):
                 PublicHTTPSConnection("example.com").connect()
             dial.assert_not_called()
 
+    def test_github_release_hosts_can_use_fake_ip_with_tls(self):
+        for host in ("github.com", "api.github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"):
+            records = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.29", 443))]
+            with self.subTest(host=host), mock.patch("downloads.socket.getaddrinfo", return_value=records), \
+                    mock.patch("downloads.socket.create_connection") as dial:
+                context = mock.Mock()
+                connection = PublicHTTPSConnection(host, timeout=10, context=context)
+                connection.connect()
+                dial.assert_called_once_with(("198.18.0.29", 443), 10)
+                context.wrap_socket.assert_called_once_with(dial.return_value, server_hostname=host)
+                self.assertIs(connection.sock, context.wrap_socket.return_value)
+
+    def test_fake_ip_exception_does_not_allow_other_hosts_or_private_addresses(self):
+        for host, address in (("example.com", "198.18.0.29"), ("github.com.example.com", "198.18.0.29"),
+                              ("198.18.0.29", "198.18.0.29"), ("github.com", "127.0.0.1"),
+                              ("api.github.com", "192.168.0.1"), ("github.com", "169.254.169.254")):
+            records = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 443))]
+            with self.subTest(host=host, address=address), mock.patch("downloads.socket.getaddrinfo", return_value=records), \
+                    mock.patch("downloads.socket.create_connection") as dial:
+                with self.assertRaisesRegex(ValueError, "局域网"):
+                    PublicHTTPSConnection(host).connect()
+                dial.assert_not_called()
+
+    def test_fake_ip_exception_is_not_carried_across_redirects(self):
+        records = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.29", 443))]
+        response = mock.MagicMock(status=302)
+        response.__enter__.return_value = response
+        response.getheader.return_value = "https://example.com/plugin.zip"
+        with mock.patch("downloads.socket.getaddrinfo", return_value=records), \
+                mock.patch("downloads.socket.create_connection") as dial, \
+                mock.patch("downloads.ssl.create_default_context"), \
+                mock.patch.object(PublicHTTPSConnection, "getresponse", return_value=response):
+            with self.assertRaisesRegex(ValueError, "局域网"), open_https("https://github.com/plugin.zip"):
+                self.fail("Redirect to another Fake-IP host must not be followed")
+            dial.assert_called_once_with(("198.18.0.29", 443), 10)
+
 
 class PhoneTests(TestCase):
     def test_english_phone_form_includes_english_validation(self):
@@ -364,6 +400,29 @@ class PluginTests(IsolatedAsyncioTestCase):
                 self.assertEqual(result["last_checked"], 123)
                 self.assertEqual({watch["name"]: watch["status"] for watch in result["watches"]},
                                  {"Selected": "update", "Other": "unchecked"})
+
+    async def test_manual_check_returns_update_and_specific_errors_together(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            with mock.patch.dict(os.environ, {"DECKY_PLUGIN_DIR": str(base / "plugins" / "Updater"),
+                                             "DECKY_PLUGIN_SETTINGS_DIR": str(base / "settings"),
+                                             "DECKY_PLUGIN_RUNTIME_DIR": str(base / "data")}):
+                backend = Plugin()
+            for name in ("Update", "Timeout", "TLS"):
+                folder = base / "plugins" / name
+                folder.mkdir(parents=True)
+                (folder / "plugin.json").write_text(json.dumps({"name": name}))
+                (folder / "package.json").write_text('{"version":"1.0.0"}')
+                await backend.watch(name, f"https://github.com/owner/{name}")
+
+            release = {"tag": "v1.1.0", "asset": asset("Update.zip")}
+            with mock.patch("main.latest_release", side_effect=[release, socket.timeout(), ssl.SSLEOFError()]):
+                result = await backend.check()
+            watches = {watch["name"]: watch for watch in result["watches"]}
+            self.assertEqual(watches["Update"]["status"], "update")
+            self.assertEqual(watches["Timeout"]["release"], {"error": "releaseTimeout"})
+            self.assertEqual(watches["TLS"]["release"], {"error": "releaseTlsError"})
+            self.assertEqual(await backend.take_notifications(), [{"name": "Update", "tag": "v1.1.0"}])
 
     async def test_watch_check_persist_and_reread_local_version(self):
         with TemporaryDirectory() as directory:

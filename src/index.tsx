@@ -4,18 +4,22 @@ import { useCallback, useEffect, useState } from 'react';
 import { check, errorText, getState, setDaily } from './api';
 import type { State } from './api';
 import { InstallDialog, WatchDetailsDialog, WatchDialog } from './dialogs';
-import { copy, getLanguage, getLanguagePreference, saveLanguagePreference } from './i18n';
+import { checkSummary, copy, getLanguage, getLanguagePreference, releaseError, saveLanguagePreference } from './i18n';
 import { showUpdateNotifications } from './notifications';
 
 const pluginName = 'UmeYc-Plugin-Updater';
+type CheckResult = { watches: State['watches'] } | { error: string };
 
 function Home() {
   const [state, setState] = useState<State>();
   const [language, setLanguage] = useState(getLanguagePreference);
-  const [busy, setBusy] = useState(false);
+  const [operation, setOperation] = useState<'check' | 'settings'>();
   const [error, setError] = useState('');
+  const [checkResult, setCheckResult] = useState<CheckResult>();
+  const busy = Boolean(operation);
   const visible = useQuickAccessVisible?.() ?? true;
-  const text = copy(getLanguage(language));
+  const locale = getLanguage(language);
+  const text = copy(locale);
   const refresh = useCallback(() => {
     void getState().then(setState, (cause) => setError(errorText(cause)));
   }, []);
@@ -31,12 +35,20 @@ function Home() {
     };
   }, [visible, refresh]);
 
-  const run = async (operation: () => Promise<State>) => {
-    setBusy(true);
+  const run = async (kind: NonNullable<typeof operation>, action: () => Promise<State>) => {
+    setOperation(kind);
     setError('');
-    try { setState(await operation()); }
-    catch (cause) { setError(errorText(cause)); }
-    finally { setBusy(false); }
+    if (kind === 'check') setCheckResult(undefined);
+    try {
+      const result = await action();
+      setState(result);
+      if (kind === 'check') setCheckResult({ watches: result.watches });
+    } catch (cause) {
+      if (kind === 'check') setCheckResult({ error: errorText(cause) });
+      else setError(errorText(cause));
+    } finally {
+      setOperation(undefined);
+    }
   };
   const watchedNames = new Set(state?.watches.map(({ name }) => name));
   const available = state?.installed.filter(({ name }) => !watchedNames.has(name)) ?? [];
@@ -52,13 +64,28 @@ function Home() {
     void showUpdateNotifications();
     return checked;
   };
+  const checkedWatches = checkResult && 'watches' in checkResult ? checkResult.watches : [];
+  const failureReasons = checkedWatches.flatMap(({ release }) =>
+    release && 'error' in release ? [releaseError(release.error, release.http_status, locale)] : []);
+  const succeeded = checkedWatches.filter(({ release }) => release && !('error' in release)).length;
+  const updates = checkedWatches.filter(({ status }) => status === 'update').length;
+  const failure = Boolean(checkResult && 'error' in checkResult) || failureReasons.length > 0;
+  const feedback = operation === 'check' ? text.checking
+    : checkResult && ('error' in checkResult ? `${text.error} · ${checkResult.error}`
+      : checkSummary(succeeded, failureReasons.length, updates, locale));
   return <>
     <PanelSection title={text.updates}>
       <PanelSectionRow><ToggleField label={text.daily} checked={state?.daily ?? false} disabled={!state || busy}
         description={state?.daily ? text.dailyOn : text.dailyOff}
-        onChange={(enabled) => void run(() => setDaily(enabled))} /></PanelSectionRow>
+        onChange={(enabled) => void run('settings', () => setDaily(enabled))} /></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" disabled={!state?.watches.length || busy}
-        onClick={() => void run(checkAll)}>{busy ? text.working : text.checkAll}</ButtonItem></PanelSectionRow>
+        onClick={() => void run('check', checkAll)}>{operation === 'check' ? text.checking : text.checkAll}</ButtonItem></PanelSectionRow>
+      {feedback && <PanelSectionRow>
+        <div role={failure ? 'alert' : 'status'} style={{ color: failure ? '#ffb4b4' : undefined, overflowWrap: 'anywhere' }}>
+          <div>{feedback}</div>
+          {[...new Set(failureReasons)].map((reason) => <div key={reason}>{reason}</div>)}
+        </div>
+      </PanelSectionRow>}
       <PanelSectionRow><ButtonItem layout="below" disabled={!available.length || busy}
         description={state && !available.length ? text.noAvailablePlugins : undefined}
         onClick={addWatch}>{text.addWatch}</ButtonItem></PanelSectionRow>

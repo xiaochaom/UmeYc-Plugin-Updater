@@ -1,6 +1,6 @@
 {
   "name": "umeyc-plugin-updater",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "repository": "git@github.com:xiaochaom/UmeYc-Plugin-Updater.git",

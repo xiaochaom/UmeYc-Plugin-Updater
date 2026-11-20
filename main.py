@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
+import ssl
 import sys
 import time
 
@@ -186,6 +188,10 @@ class Plugin:
                 repo = source["repo"]
                 try:
                     release = await asyncio.to_thread(latest_release, repo, target)
+                except (TimeoutError, socket.timeout):
+                    release = {"error": "releaseTimeout"}
+                except ssl.SSLError:
+                    release = {"error": "releaseTlsError"}
                 except (OSError, HTTPException, ValueError, KeyError, TypeError):
                     release = {"error": "releaseNetworkError"}
                 results[target] = {**source, "release": release}

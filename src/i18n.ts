@@ -24,7 +24,7 @@ const zh = {
   locale: 'zh-CN', language: '界面语言 / Language', systemLanguage: '跟随系统', updates: '插件更新', daily: '每日检查',
   dailyOn: '已开启 · Decky 运行时每 24 小时检查，不自动安装', dailyOff: '已关闭 · 仍可手动检查',
   checkAll: '手动检查', working: '处理中…', addWatch: '添加监听插件', scanInstall: '扫码安装插件',
-  lastChecked: '上次检查：', refresh: '刷新列表', watches: '监听列表', noWatches: '还没有监听的插件。',
+  lastChecked: '上次全量检查时间：', refresh: '刷新列表', watches: '监听列表', noWatches: '还没有监听的插件。',
   noAvailablePlugins: '没有未监听的已安装插件。',
   updateAvailable: '有可用更新', notificationTitle: '插件有可用更新', close: '关闭',
   qrHint: '用同一 Wi-Fi 下的手机扫码，在网页中粘贴地址。二维码 5 分钟内有效。',
@@ -39,6 +39,8 @@ const zh = {
   changeUrl: '更换地址', missing: '未安装', unchecked: '尚未检查', error: '检查失败',
   unknown: '无法比较版本', current: '未发现较新版本', update: '有可用更新', no_asset: '有较新版本，但没有可用的 ZIP',
   releaseNetworkError: '无法读取 GitHub Release，请检查网络后重试',
+  releaseTimeout: '连接 GitHub 超时，请检查网络或切换代理节点后重试',
+  releaseTlsError: '与 GitHub 的 HTTPS 连接失败，请检查代理节点或 Deck 的日期和时间',
   releaseNotFound: '没有公开的正式 Release，或仓库不可用', releaseRateLimit: 'GitHub API 请求频率已达上限，请稍后重试',
   releaseHttpError: 'GitHub 查询失败', releaseTooLarge: 'Release 数据过大', releaseNoStable: '没有公开的正式 Release',
   multipleZips: '有多个 ZIP，无法确认对应成品', noZip: 'Release 没有上传 Decky ZIP 成品',
@@ -56,7 +58,7 @@ const en: Record<keyof typeof zh, string> = {
   locale: 'en', language: 'Language / 界面语言', systemLanguage: 'System default', updates: 'Plugin Updates', daily: 'Daily checks',
   dailyOn: 'On · Checks every 24 hours while Decky is running. Never installs automatically.', dailyOff: 'Off · You can still check manually.',
   checkAll: 'Check all', working: 'Working…', addWatch: 'Watch a plugin', scanInstall: 'Install via QR code',
-  lastChecked: 'Last checked: ', refresh: 'Refresh list', watches: 'Watched Plugins', noWatches: 'No plugins watched yet.',
+  lastChecked: 'Last full check attempt: ', refresh: 'Refresh list', watches: 'Watched Plugins', noWatches: 'No plugins watched yet.',
   noAvailablePlugins: 'No unwatched plugins are installed.',
   updateAvailable: 'Update available', notificationTitle: 'Plugin update available', close: 'Close',
   qrHint: 'Scan with a phone on the same Wi-Fi network, then paste the URL. The QR code expires in 5 minutes.',
@@ -71,6 +73,8 @@ const en: Record<keyof typeof zh, string> = {
   changeUrl: 'Change URL', missing: 'Not installed', unchecked: 'Not checked yet', error: 'Check failed',
   unknown: 'Cannot compare versions', current: 'No newer version found', update: 'Update available', no_asset: 'A newer version has no usable ZIP',
   releaseNetworkError: 'Could not read the GitHub release. Check your network and try again.',
+  releaseTimeout: 'The GitHub connection timed out. Check your network or change proxy servers and try again.',
+  releaseTlsError: 'The HTTPS connection to GitHub failed. Check your proxy server or the Deck’s date and time.',
   releaseNotFound: 'No public stable release found, or the repository is unavailable.', releaseRateLimit: 'GitHub API rate limit reached. Try again later.',
   releaseHttpError: 'GitHub request failed', releaseTooLarge: 'The release response is too large.', releaseNoStable: 'No public stable release found.',
   multipleZips: 'Multiple ZIP assets found; could not select one.', noZip: 'The release has no uploaded Decky ZIP.',
@@ -88,11 +92,22 @@ export function copy(language = getLanguage()) {
   return language === 'zh' ? zh : en;
 }
 
-export function releaseError(code: string, httpStatus?: number) {
-  const language = getLanguage();
+export function checkSummary(succeeded: number, failed: number, updates: number, language: Language) {
+  if (!succeeded && !failed) return copy(language).noWatches;
+  if (language === 'zh') {
+    if (!succeeded) return `检查失败 · ${failed} 个插件均未能读取 Release`;
+    return `${failed ? '部分检查失败' : '检查完成'} · 成功 ${succeeded} · 失败 ${failed} · 可更新 ${updates}`;
+  }
+  if (!succeeded) return `Check failed · 0 succeeded · ${failed} failed`;
+  return `${failed ? 'Some checks failed' : 'Check complete'} · ${succeeded} succeeded · ${failed} failed · ${updates} updatable`;
+}
+
+export function releaseError(code: string, httpStatus?: number, language = getLanguage()) {
   const text = copy(language);
   switch (code) {
     case 'releaseNetworkError': return text.releaseNetworkError;
+    case 'releaseTimeout': return text.releaseTimeout;
+    case 'releaseTlsError': return text.releaseTlsError;
     case 'releaseNotFound': return text.releaseNotFound;
     case 'releaseRateLimit': return text.releaseRateLimit;
     case 'releaseHttpError': return httpStatus ? `${text.releaseHttpError} (HTTP ${httpStatus})` : text.releaseHttpError;

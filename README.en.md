@@ -13,6 +13,10 @@ A Decky plugin updater for Steam Deck Gaming Mode. Link installed plugins to the
 
 If downloading or verifying a ZIP fails, the dialog shows the reason and Decky sends a notification. You can retry from the same dialog.
 
+Below **Check all**, the plugin shows when a check is running, how many checks succeeded or failed, how many updates can be installed, and why checks failed. A new check timestamp does not mean every check succeeded.
+
+GitHub release checks and downloads work with DeckyClash and other TUN proxies using Fake-IP addresses in `198.18.0.0/15`, without additional configuration. This applies only to official GitHub release hosts, and HTTPS certificate verification remains enabled. Other ZIP sources must resolve to public addresses; if your proxy returns a Fake-IP for one, add that hostname to its `fake-ip-filter`.
+
 By default the plugin follows Steam's interface language: it uses Simplified Chinese for Chinese and English for other languages. Choose **Language / 界面语言** on the home screen to select a language manually or switch back to **System default**. The current language applies to plugin dialogs, the phone form, and update notifications. GitHub release notes remain in their original language. Decky's own install dialog follows Steam's interface language.
 
 The phone form is available only while its dialog is open. QR links expire after five minutes and can be submitted once. Use a trusted network and phone, avoid URLs with authentication tokens, and install only from publishers you trust. ZIP and hash validation do not establish trust in plugin code. Decky may replace an existing plugin of the same name, so follow the publisher's backup guidance.

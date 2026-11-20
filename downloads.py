@@ -19,6 +19,10 @@ from messages import message
 MAX_DOWNLOAD = 128 * 1024**2
 MAX_UNPACKED = 512 * 1024**2
 MAX_MANIFEST = 256 * 1024
+TUN_FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
+GITHUB_RELEASE_HOSTS = frozenset({
+    "api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
+})
 
 
 def https_url(value):
@@ -43,6 +47,8 @@ class PublicHTTPSConnection(HTTPSConnection):
             ip = ipaddress.ip_address(address)
             if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
                 ip = ip.ipv4_mapped
+            if self.host in GITHUB_RELEASE_HOSTS and self.port == 443 and ip in TUN_FAKE_IP_RANGE:
+                continue
             if not ip.is_global or ip.is_multicast or ip.is_reserved:
                 raise ValueError(message("不允许访问局域网、回环或保留地址", "Private, loopback and reserved addresses are not allowed."))
         last_error = None
