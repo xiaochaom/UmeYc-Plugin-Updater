@@ -1,0 +1,11 @@
+{
+  "name": "UmeYc-Plugin-Updater",
+  "author": "xiaochaom",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["plugins", "updates"],
+    "description": "Watch Decky plugin releases, get update notifications, and send ZIP links via QR. / 监听 Decky 插件更新、接收通知并扫码发送 ZIP 链接。",
+    "image": ""
+  }
+}
