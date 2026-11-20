@@ -257,14 +257,18 @@ class Plugin:
         release = source.get("release") or {}
         asset = release.get("asset") or {}
         if release.get("tag") != tag or not asset or asset["url"] != url:
-            raise ValueError(message("更新信息已失效，请重新查看", "The update details changed. Check for updates again."))
+            return {"error": message("更新信息已失效，请重新查看", "The update details changed. Check for updates again.")}
         return await self._prepare(asset["url"], asset.get("digest"), name, tag)
 
     async def _prepare(self, url, digest=None, name=None, tag=None):
         if self.download_lock.locked():
-            raise ValueError(message("已有 ZIP 在下载，请稍后再试", "A ZIP is already downloading. Try again shortly."))
+            return {"error": message("已有 ZIP 在下载，请稍后再试", "A ZIP is already downloading. Try again shortly.")}
         async with self.download_lock:
-            return await asyncio.to_thread(self._stage_zip, url, digest, name, tag)
+            try:
+                candidate = await asyncio.to_thread(self._stage_zip, url, digest, name, tag)
+            except ValueError as error:
+                return {"error": str(error)}
+            return {"candidate": candidate}
 
     def _stage_zip(self, url, digest, name, tag):
         self._clean_staging()
@@ -276,5 +280,6 @@ class Plugin:
             kind = install_type(candidate, installed_plugins(self.plugin_dir), self.plugin_dir, name, tag)
             return {**candidate, "artifact": f"file://{archive}", "sha256": checksum, "kind": kind}
         except BaseException:
-            archive.unlink(missing_ok=True)
+            with suppress(OSError):
+                archive.unlink(missing_ok=True)
             raise

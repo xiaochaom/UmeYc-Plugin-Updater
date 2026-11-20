@@ -8,18 +8,19 @@ import {
 } from './api';
 import type { Candidate, PhoneMode, State, Watch } from './api';
 import { assetError, copy, releaseError } from './i18n';
-import { showUpdateNotifications } from './notifications';
+import { showPackageFailure, showUpdateNotifications } from './notifications';
 
 const layout = { display: 'flex', gap: 10, marginTop: 12 };
 
-function Dialog({ title, children, closeModal, busy, actions }: ModalRootProps & {
-  title: string; busy?: boolean; actions?: ReactNode;
+function Dialog({ title, children, closeModal, busy, actions, error }: ModalRootProps & {
+  title: string; busy?: boolean; actions?: ReactNode; error?: string;
 }) {
   const close = () => { if (!busy) closeModal?.(); };
   return (
     <ModalRoot bDisableBackgroundDismiss={busy} bHideCloseIcon={busy} onCancel={close} onEscKeypress={close}>
       <Focusable flow-children="column" style={{ width: 'min(500px, 78vw)', padding: 16 }}>
         <h2 style={{ margin: '0 0 12px' }}>{title}</h2>
+        {error && <p role="alert" style={{ color: '#ffb4b4', margin: '0 0 12px', overflowWrap: 'anywhere' }}>{error}</p>}
         {children}
         <Focusable flow-children="row" style={layout}>
           {actions}
@@ -156,13 +157,16 @@ export function InstallDialog({ closeModal }: ModalRootProps) {
         setCandidate(await prepareInstall(url));
       }
     } catch (cause) {
-      setError(errorText(cause));
+      const detail = errorText(cause);
+      const title = candidate ? text.installFailed : text.downloadFailed;
+      setError(`${title} · ${detail}`);
+      showPackageFailure(title, detail);
     } finally {
       setBusy(false);
     }
   };
   return (
-    <Dialog title={text.scanInstall} closeModal={closeModal} busy={busy} actions={
+    <Dialog title={text.scanInstall} closeModal={closeModal} busy={busy} error={error} actions={
       <DialogButton disabled={!url.trim() || busy || scan} onClick={() => void proceed()}>
         {busy ? text.working : candidate ? text.install : text.downloadZip}
       </DialogButton>
@@ -180,7 +184,6 @@ export function InstallDialog({ closeModal }: ModalRootProps) {
         <p>{text.trustedOnly}</p>
         <DialogButton disabled={busy} onClick={() => setCandidate(undefined)}>{text.changeUrl}</DialogButton>
       </>}
-      {error && <p role="alert">{error}</p>}
     </Dialog>
   );
 }
@@ -219,12 +222,20 @@ export function WatchDetailsDialog({ initialItem, onChange, onEdit, closeModal }
   });
   const update = () => run('update', async () => {
     if (!canUpdate || !release?.asset) return;
-    const candidate = privileged ?? await prepareUpdate(item.name, release.tag, release.asset.url);
-    if (candidate.root && !privileged) {
-      setPrivileged(candidate);
-    } else {
+    let candidate = privileged;
+    try {
+      candidate ??= await prepareUpdate(item.name, release.tag, release.asset.url);
+      if (candidate.root && !privileged) {
+        setPrivileged(candidate);
+        return;
+      }
       await requestInstall(candidate);
       closeModal?.();
+    } catch (cause) {
+      const detail = errorText(cause);
+      const title = candidate ? text.installFailed : text.downloadFailed;
+      setError(`${title} · ${detail}`);
+      showPackageFailure(title, `${item.name} · ${detail}`);
     }
   });
   const remove = () => run('remove', async () => {
@@ -233,7 +244,7 @@ export function WatchDetailsDialog({ initialItem, onChange, onEdit, closeModal }
   });
 
   return (
-    <Dialog title={item.name} closeModal={closeModal} busy={busy} actions={confirmRemove ? <>
+    <Dialog title={item.name} closeModal={closeModal} busy={busy} error={error} actions={confirmRemove ? <>
       <DialogButton disabled={busy} onClick={() => void remove()}>{text.confirmRemove}</DialogButton>
       <DialogButton disabled={busy} onClick={() => { setConfirmRemove(false); setError(''); }}>{text.cancel}</DialogButton>
     </> : <>
@@ -262,7 +273,6 @@ export function WatchDetailsDialog({ initialItem, onChange, onEdit, closeModal }
           <DialogButton disabled={busy} onClick={() => { setConfirmRemove(true); setError(''); }}>{text.removeWatch}</DialogButton>
         </Focusable>
       </>}
-      {error && <p role="alert">{error}</p>}
     </Dialog>
   );
 }

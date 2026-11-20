@@ -45,8 +45,17 @@ export const unwatchPlugin = callable<[string], State>('unwatch');
 export const startPhone = localized<[PhoneMode], { id: string; url: string }>('start_phone');
 export const pollPhone = callable<[string], { status: 'waiting' | 'expired' } | { status: 'received'; url: string }>('poll_phone');
 export const stopPhone = callable<[string]>('stop_phone');
-export const prepareInstall = localized<[string], Candidate>('prepare_install');
-export const prepareUpdate = localized<[string, string, string], Candidate>('prepare_update');
+export const prepareInstall = prepareCandidate<[string]>('prepare_install');
+export const prepareUpdate = prepareCandidate<[string, string, string]>('prepare_update');
+
+function prepareCandidate<Args extends unknown[]>(method: string) {
+  const invoke = localized<Args, { candidate: Candidate } | { error: string }>(method);
+  return async (...args: Args) => {
+    const result = await invoke(...args);
+    if ('error' in result) throw new Error(result.error);
+    return result.candidate;
+  };
+}
 
 function localized<Args extends unknown[], Result>(method: string) {
   const invoke = callable<[...Args, Language], Result>(method);
@@ -62,4 +71,7 @@ export async function requestInstall(candidate: Candidate) {
     candidate.version, candidate.sha256, candidate.kind);
 }
 
-export const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+export function errorText(error: unknown) {
+  const detail = error && typeof error === 'object' && 'message' in error ? error.message : error;
+  return typeof detail === 'string' && detail.trim() ? detail : copy().unexpectedError;
+}

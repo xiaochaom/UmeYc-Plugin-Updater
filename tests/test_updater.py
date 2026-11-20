@@ -265,6 +265,39 @@ class PhoneTests(TestCase):
 
 
 class PluginTests(IsolatedAsyncioTestCase):
+    async def test_prepare_returns_localized_timeout_and_allows_retry(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            plugins = base / "plugins"
+            plugins.mkdir()
+            with mock.patch.dict(os.environ, {"DECKY_PLUGIN_DIR": str(plugins / "Updater"),
+                                             "DECKY_PLUGIN_SETTINGS_DIR": str(base / "settings"),
+                                             "DECKY_PLUGIN_RUNTIME_DIR": str(base / "data")}):
+                backend = Plugin()
+            url = "https://example.com/Test.zip"
+            backend.settings["watches"]["Test Plugin"] = {
+                "release": {"tag": "v1.10.0", "asset": {"url": url}},
+            }
+            with mock.patch("downloads.open_https", side_effect=TimeoutError):
+                self.assertEqual(await backend.prepare_update("Test Plugin", "v1.10.0", url),
+                                 {"error": "ZIP 下载超时，请检查 Deck 的网络后重试"})
+                self.assertEqual(await backend.prepare_install(url, language="en"),
+                                 {"error": "ZIP download timed out. Check the Deck’s network and try again."})
+            self.assertEqual(list(backend.staging.iterdir()), [])
+
+            def write_zip(_url, path, _digest):
+                package_zip(path)
+                return sha256(path.read_bytes()).hexdigest()
+
+            with mock.patch("main.download_zip", side_effect=write_zip):
+                result = await backend.prepare_install(url)
+            candidate = result["candidate"]
+            self.assertEqual((candidate["name"], candidate["version"], candidate["kind"]),
+                             ("Test Plugin", "1.10.0", 0))
+            archive, = backend.staging.iterdir()
+            self.assertEqual(candidate["artifact"], archive.as_uri())
+            self.assertEqual(candidate["sha256"], sha256(archive.read_bytes()).hexdigest())
+
     async def test_notification_rearms_only_after_install_and_supports_daily_checks(self):
         with TemporaryDirectory() as directory:
             base = Path(directory)

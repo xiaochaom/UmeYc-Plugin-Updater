@@ -11,6 +11,8 @@ A Decky plugin updater for Steam Deck Gaming Mode. Link installed plugins to the
 3. Each watched plugin occupies one row, with a green dot when an update is ready. Select its name to open details, check for updates, edit the source, or stop watching. Select **Update** to download and verify the ZIP, then approve the install in Decky's confirmation dialog. A timeout or interrupted connection is retried once.
 4. With **Install via QR code**, scan the code and send the public HTTPS URL of a Decky ZIP, or enter it on the Deck. Review the plugin name and version before proceeding. Scanning the QR code does not download or install anything on its own.
 
+If downloading or verifying a ZIP fails, the dialog shows the reason and Decky sends a notification. You can retry from the same dialog.
+
 By default the plugin follows Steam's interface language: it uses Simplified Chinese for Chinese and English for other languages. Choose **Language / 界面语言** on the home screen to select a language manually or switch back to **System default**. The current language applies to plugin dialogs, the phone form, and update notifications. GitHub release notes remain in their original language. Decky's own install dialog follows Steam's interface language.
 
 The phone form is available only while its dialog is open. QR links expire after five minutes and can be submitted once. Use a trusted network and phone, avoid URLs with authentication tokens, and install only from publishers you trust. ZIP and hash validation do not establish trust in plugin code. Decky may replace an existing plugin of the same name, so follow the publisher's backup guidance.
@@ -35,6 +37,6 @@ pnpm test
 pnpm package
 ```
 
-Download `UmeYc-Plugin-Updater.zip` from [GitHub Releases](https://github.com/xiaochaom/UmeYc-Plugin-Updater/releases/latest) and use Decky's developer option to install from ZIP, or copy the ZIP asset URL and install from URL. If you build the package yourself, use `out/UmeYc-Plugin-Updater.zip`. When publishing, match the tag to `package.json` and upload the built ZIP rather than the auto-generated source archive.
+Download `UmeYc-Plugin-Updater.zip` from [GitHub Releases](https://github.com/xiaochaom/UmeYc-Plugin-Updater/releases/latest) and use Decky's developer option to install from ZIP, or copy the ZIP asset URL and install from URL. If you build the package yourself, use `out/UmeYc-Plugin-Updater.zip`. To publish, push an annotated tag matching the version in `package.json` (for example, `v0.1.8`). GitHub Actions uses the tag annotation as release notes and uploads the built ZIP and checksum after the tests pass.
 
 The interface and LAN QR flow were inspired by [UmeYc-Portal](https://github.com/xiaochaom/UmeYc-Portal).

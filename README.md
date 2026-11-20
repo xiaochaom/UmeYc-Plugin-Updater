@@ -11,6 +11,8 @@ Steam Deck 游戏模式的 Decky 插件更新助手。把已安装的插件与�
 3. 监听列表每个插件占一行，有可安装的更新时右上角显示绿点。点插件名打开详情，可单独 **检查更新**、编辑来源或移除监听。有更新时可在详情查看版本及发布说明，再点 **更新** 下载并验证 ZIP。下载连接中断或超时时会自动重试一次；验证通过后还需要在 Decky 的原生弹窗确认安装。
 4. **扫码安装插件**：扫码后在手机粘贴公开 HTTPS 的 ZIP 成品地址。回到 Deck，下载并检查 ZIP，核对插件名和版本后再安装。也可直接在 Deck 输入链接。手机不会触发下载或安装。
 
+ZIP 下载或校验失败时，弹窗会显示原因，并发一条 Decky 通知。排查后可直接重试。
+
 扫码只在打开对应弹窗时启动局域网输入页；链接一次有效、5 分钟过期。请只在可信的 Wi-Fi 和设备上扫码，避免发送带鉴权令牌的链接。结构校验和哈希校验不意味着插件代码可信，只安装你信任的发布者。通过 Decky 安装可能替换现有同名插件，请按目标插件文档备份重要设置。
 
 插件默认跟随 Steam 界面语言：中文显示简体中文，其他语言显示英文。也可在首页 **界面语言 / Language** 手动选择，或切回 **跟随系统**。插件弹窗、扫码页和更新通知使用当前语言；GitHub 发布说明保留原文，Decky 原生安装确认使用 Steam 界面语言。
@@ -37,6 +39,6 @@ pnpm test
 pnpm package
 ```
 
-用户可从 [GitHub Releases](https://github.com/xiaochaom/UmeYc-Plugin-Updater/releases/latest) 下载 `UmeYc-Plugin-Updater.zip`，在 Decky 的开发者设置使用 **从 ZIP 安装插件**，也可复制 ZIP 成品链接，使用 **从 URL 安装插件**。自行构建的安装包位于 `out/UmeYc-Plugin-Updater.zip`。发布时，Release 标签应与 `package.json` 一致；上传编译后的 ZIP，不要上传 GitHub 自动生成的源码包。
+用户可从 [GitHub Releases](https://github.com/xiaochaom/UmeYc-Plugin-Updater/releases/latest) 下载 `UmeYc-Plugin-Updater.zip`，在 Decky 的开发者设置使用 **从 ZIP 安装插件**，也可复制 ZIP 成品链接，使用 **从 URL 安装插件**。自行构建的安装包位于 `out/UmeYc-Plugin-Updater.zip`。发布时推送与 `package.json` 版本一致的附注标签（例如 `v0.1.8`）；GitHub Actions 会使用标签附注作为发布说明，测试通过后上传编译好的 ZIP 和校验和。
 
 界面与局域网扫码交互参考 [UmeYc-Portal](https://github.com/xiaochaom/UmeYc-Portal)。

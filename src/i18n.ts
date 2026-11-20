@@ -48,6 +48,8 @@ const zh = {
   releaseVersion: 'Release：', versionUnknown: '未知', noNotes: '此版本未填写发布说明。', artifact: '成品：',
   updateRoot: '该版本请求 root 权限。请确认你信任这个来源。', editSource: '编辑来源', removeWatch: '移除监听',
   unsupportedLoader: '当前 Decky Loader 不支持此安装接口，请升级 Decky Loader 后重试。',
+  downloadFailed: '下载或验证 ZIP 失败', installFailed: '无法打开 Decky 安装确认',
+  unexpectedError: '操作失败，请重试。',
 };
 
 const en: Record<keyof typeof zh, string> = {
@@ -78,6 +80,8 @@ const en: Record<keyof typeof zh, string> = {
   releaseVersion: 'Release: ', versionUnknown: 'Unknown', noNotes: 'No release notes provided.', artifact: 'Asset: ',
   updateRoot: 'This version requests root access. Make sure you trust the source.', editSource: 'Edit source', removeWatch: 'Stop watching',
   unsupportedLoader: 'This Decky Loader version does not support this install method. Update Decky Loader and try again.',
+  downloadFailed: 'Could not download or verify the ZIP', installFailed: 'Could not open the Decky install prompt',
+  unexpectedError: 'The operation failed. Try again.',
 };
 
 export function copy(language = getLanguage()) {
